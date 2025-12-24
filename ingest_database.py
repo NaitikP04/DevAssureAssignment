@@ -44,6 +44,12 @@ def process_image(image_path):
         return None
 
 def main():
+
+    if os.path.exists(CHROMA_PATH):
+        import shutil
+        shutil.rmtree(CHROMA_PATH)  # Delete old DB to prevent duplicates
+        print(f"Cleared existing database at {CHROMA_PATH}")
+
     # Intiate embeddings model
     embeddings_model = OpenAIEmbeddings(model="text-embedding-3-large")
 

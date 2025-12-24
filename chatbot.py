@@ -1,8 +1,10 @@
 import gradio as gr
-import os
+import json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import FlashrankRerank
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
@@ -18,7 +20,11 @@ CHROMA_PATH = r"chroma_db"
 embeddings_model = OpenAIEmbeddings(model="text-embedding-3-large")
 
 # Intiate the language model
-llm = ChatOpenAI(temperature=0.5, model="gpt-4o")
+llm = ChatOpenAI(
+    temperature=0.1, 
+    model="gpt-4o",
+    model_kwargs={"response_format": {"type": "json_object"}}
+)
 
 # Connect to ChromaDB
 vector_store = Chroma(
@@ -30,11 +36,9 @@ vector_store = Chroma(
 # Setup Retrieval
 try:
     # We need to fetch documents for BM25
-    print("Initializing Hybrid Search...")
+    print("Initializing Hybrid Search with Reranking...")
     
     # Get all documents from Chroma to initialize BM25
-    # Note: In a production system with millions of docs, you wouldn't load all into memory like this.
-    # You would use a persistent BM25 store or a search engine like Elasticsearch/Opensearch.
     existing_data = vector_store.get()
     
     if existing_data['documents']:
@@ -44,23 +48,32 @@ try:
         ]
         
         bm25_retriever = BM25Retriever.from_documents(docs)
-        bm25_retriever.k = 5
+        bm25_retriever.k = 10
         
-        chroma_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        chroma_retriever = vector_store.as_retriever(search_kwargs={"k": 10})
         
-        retriever = EnsembleRetriever(
+        ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, chroma_retriever],
             weights=[0.5, 0.5]
         )
-        print("Hybrid Search (BM25 + Chroma) initialized successfully.")
+
+        # Setup Reranker 
+        # This uses a tiny BERT model to re-score the docs and only keep the truly relevant ones
+        compressor = FlashrankRerank(top_n=5) # Only keep top 5 actually relevant ones
+        
+        # Final Retriever Pipeline
+        retriever = ContextualCompressionRetriever(
+            base_compressor=compressor, 
+            base_retriever=ensemble_retriever
+        )
+        
+        print("Reranking initialized.")
     else:
-        print("No documents found in Chroma. Defaulting to basic vector search.")
-        retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
         
 except Exception as e:
-    print(f"Failed to initialize Hybrid Search: {e}")
-    print("Falling back to standard Vector Search.")
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    print(f"Reranking setup failed: {e}. Falling back to basic search.")
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
 
 def user(user_message, history):
@@ -96,25 +109,53 @@ def bot(history):
         retrieved_context_str += f"[{i+1}] Source: {source}\nSnippet: {content_snippet}...\n\n"
         knowledge += doc.page_content + "\n\n"
     
-    # Construct the prompt
+    # Construct the prompt for JSON test case generation
     rag_prompt = f"""
-    You are an Assistant which answers questions based on knowledge which is provided to you.
-    While answering, you don't use your internal knowledge,
-    but solely the information in the "The knowledge" section below.
-    You don't need to mention anything to the user about the provided knowledge.
+You are an expert QA Engineer. Your goal is to generate test cases based strictly on the provided context.
+Output format: JSON ONLY. Do not include markdown formatting like ```json ... ```.
 
-    The question is: {user_message}
+Required JSON Structure:
+[
+  {{
+    "use_case_title": "...",
+    "preconditions": "...",
+    "steps": ["1. ...", "2. ..."],
+    "expected_results": "...",
+    "negative_test_cases": ["..."],
+    "boundary_test_cases": ["..."],
+    "source_file_reference": "..."
+  }}
+]
 
-    Conversation history: {history[:-1]}
+Rules:
+- Include a "test_data" field in the JSON structure ONLY if specific data inputs are needed for the test case.
+- Do not hallucinate features not present in the context.
+- Base your test cases mainly on the provided knowledge below.
+- Each test case must reference the source file it came from.
 
-    The knowledge: {knowledge}
+User Request: {user_message}
+
+Provided Knowledge:
+{knowledge}
+
+Generate the test cases in strict JSON format now.
     """
 
-    # Stream the response - append assistant message
-    history.append({"role": "assistant", "content": ""})
-    for response in llm.stream(rag_prompt):
-        history[-1]["content"] += response.content
-        yield history, retrieved_context_str
+    # Collect the full response (non-streaming for JSON validation)
+    response = llm.invoke(rag_prompt)
+    response_content = response.content
+    
+    # Validate and pretty-print JSON
+    try:
+        parsed_json = json.loads(response_content)
+        formatted_json = json.dumps(parsed_json, indent=2)
+        final_response = formatted_json
+    except json.JSONDecodeError as e:
+        final_response = f"Error: Invalid JSON returned by LLM.\n\nRaw Response:\n{response_content}\n\nJSON Error: {str(e)}"
+    
+    # Append assistant message with formatted response
+    history.append({"role": "assistant", "content": final_response})
+    yield history, retrieved_context_str
 
 # UI Setup with gr.Blocks
 with gr.Blocks(title="DevAssure Chatbot") as demo:
