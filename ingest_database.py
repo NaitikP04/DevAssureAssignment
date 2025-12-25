@@ -23,9 +23,27 @@ def process_image(image_path):
         with open(image_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
 
-        llm = ChatOpenAI(model="gpt-4o", max_tokens=1000)
-        prompt = "Describe this UI screenshot or diagram in extreme detail for a QA engineer. Mention every button, field, error message, and layout element visible."
-        
+        llm = ChatOpenAI(model="gpt-5.1", max_tokens=3000)
+        prompt = """
+        Analyze this UI screenshot for a Software QA Engineer. Provide a structured breakdown of the interface to aid in writing automated test cases.
+
+        Output the description in the following sections:
+
+        1.  **Screen Overview**: What is the primary purpose of this screen? (e.g., "Login Page", "Flight Search Results", "Dashboard").
+        2.  **Interactive Elements (Buttons & Inputs)**:
+            * List every button, link, and input field.
+            * For inputs: Mention the label, placeholder text, and any default value.
+            * For buttons: Mention the exact text label and if it looks primary (emphasized) or secondary.
+        3.  **Static Text & Instructions**:
+            * Transcribe any helper text, subtitles, or instructions exactly as written (e.g., "Password must be 8 characters").
+        4.  **UI State & Feedback**:
+            * Are there any visible error messages, success banners, or validation warnings? Quote them exactly.
+            * Describe the state of elements (e.g., "The 'Submit' button appears disabled").
+        5.  **Visual Layout**:
+            * Briefly describe the arrangement (e.g., "Sidebar on the left, main content on right").
+
+        Ensure all text extracted from the image is accurate to allow for string-matching verification in test cases.
+        """        
         message = HumanMessage(
             content=[
                 {"type": "text", "text": prompt},
