@@ -1,0 +1,32 @@
+# Core LangChain
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-chroma>=0.1.0
+langchain-community>=0.3.0
+langchain-classic>=0.0.1
+
+# Vector Store
+chromadb>=0.4.0
+
+# Document Processing
+pypdf>=4.0.0
+unstructured>=0.10.0
+python-docx>=1.0.0
+
+# Reranking
+flashrank>=0.2.0
+
+# BM25
+rank-bm25>=0.2.2
+
+# UI
+gradio>=4.0.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# OpenAI
+openai>=1.0.0
+
+# Utilities
+tiktoken>=0.5.0
