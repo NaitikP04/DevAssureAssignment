@@ -81,16 +81,29 @@ cp .env.example .env
 ### 3. Add Your Documents
 Put your files (PDF, DOCX, TXT, MD, PNG, JPG) in the `data/` folder.
 
-### 4. Ingest Documents
+### 4. Ingest Documents (Optional - for preprocessing)
 ```bash
 python ingest_database.py
 ```
+> **Note:** This step is optional. You can also upload files directly through the chatbot UI at runtime.
 
 ### 5. Run the Chatbot
 ```bash
 python chatbot.py
 ```
 Open `http://localhost:7860` in your browser.
+
+## 📤 Runtime File Upload
+
+You can upload files directly through the chatbot UI on the right sidebar:
+
+1. **Select files** (PDF, TXT, MD, DOC/DOCX, PNG, JPG, JPEG)
+2. **Click "Upload & Process"** - files are loaded, chunked, embedded, and stored
+3. **Query immediately** - files are ready for retrieval
+
+**Limits:** Max 5 files per upload, 10MB per file.
+
+The **Database** section shows all indexed files. You can delete specific files or clear all runtime uploads.
 
 ## ⚙️ Advanced Settings (in the UI)
 

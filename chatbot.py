@@ -3,6 +3,7 @@ import gradio as gr
 import json
 import time
 import os
+from typing import List, Optional
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
@@ -11,14 +12,16 @@ from langchain_classic.retrievers.document_compressors import FlashrankRerank
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
-from dotenv import load_dotenv
 
 # Import custom modules
 from guards import SafetyGuard
 from evaluation import RAGEvaluator
 from utils import setup_logging, PipelineLogger
+from ingestion.runtime_uploader import RuntimeUploader
+from ingestion.database_manager import DatabaseManager
 
 # Import .env file
+from dotenv import load_dotenv
 load_dotenv()
 
 # Setup logging
@@ -100,10 +103,119 @@ except Exception as e:
     print(f"Reranking setup failed: {e}. Falling back to basic search.")
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
 
+# Initialize runtime uploader and database manager
+runtime_uploader = RuntimeUploader(vector_store, embeddings_model)
+db_manager = DatabaseManager(vector_store)
+
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+
+def reinitialize_bm25():
+    """Reinitialize BM25 retriever after database changes."""
+    global bm25_retriever
+    try:
+        existing_data = vector_store.get()
+        if existing_data['documents']:
+            docs = [
+                Document(page_content=txt, metadata=meta) 
+                for txt, meta in zip(existing_data['documents'], existing_data['metadatas'])
+            ]
+            bm25_retriever = BM25Retriever.from_documents(docs)
+            bm25_retriever.k = 10
+            print(f"[BM25] Reinitialized with {len(docs)} documents")
+        else:
+            bm25_retriever = None
+    except Exception as e:
+        print(f"[BM25] Reinitialize failed: {e}")
+        bm25_retriever = None
+
+
+def handle_file_upload(files: List[str]) -> str:
+    """
+    Handle file upload from Gradio.
+    
+    Args:
+        files: List of file paths from Gradio file component
+        
+    Returns:
+        Status message string
+    """
+    if not files:
+        return "⚠️ No files selected"
+    
+    # Process and store files
+    result = runtime_uploader.process_and_store(files)
+    
+    # Reinitialize BM25 if files were added
+    if result.success:
+        reinitialize_bm25()
+    
+    return result.to_status_message()
+
+
+def get_database_contents() -> str:
+    """Get formatted database contents for display."""
+    return db_manager.format_files_for_display()
+
+
+def get_file_list() -> List[str]:
+    """Get list of files for dropdown."""
+    return db_manager.get_file_choices()
+
+
+def delete_selected_files(selected_sources: List[str]) -> tuple:
+    """
+    Delete selected files from the database.
+    
+    Returns:
+        Tuple of (status_message, updated_file_list, updated_database_display)
+    """
+    if not selected_sources:
+        return "⚠️ No files selected for deletion", get_file_list(), get_database_contents()
+    
+    results = db_manager.delete_files(selected_sources)
+    
+    success_count = sum(1 for v in results.values() if v)
+    fail_count = len(results) - success_count
+    
+    # Reinitialize BM25 after deletion
+    if success_count > 0:
+        reinitialize_bm25()
+    
+    if fail_count == 0:
+        msg = f"✅ Deleted {success_count} file(s) and all their chunks"
+    else:
+        msg = f"⚠️ Deleted {success_count} file(s), {fail_count} failed"
+    
+    return msg, get_file_list(), get_database_contents()
+
+
+def clear_runtime_uploads() -> tuple:
+    """
+    Clear all runtime-uploaded files.
+    
+    Returns:
+        Tuple of (status_message, updated_file_list, updated_database_display)
+    """
+    deleted_count = db_manager.delete_all_runtime_uploads()
+    runtime_uploader.reset_session()
+    
+    if deleted_count > 0:
+        reinitialize_bm25()
+        msg = f"✅ Cleared {deleted_count} runtime upload chunks"
+    else:
+        msg = "ℹ️ No runtime uploads to clear"
+    
+    return msg, get_file_list(), get_database_contents()
+
+
+def refresh_database_view() -> tuple:
+    """Refresh the database view."""
+    return get_file_list(), get_database_contents()
+
 
 def user(user_message, history):
     # Ensure user_message is a string
@@ -259,7 +371,6 @@ def bot(history, top_k, use_reranking, rerank_top_n, bm25_weight):
         }
       ],
       "assumptions_made": ["List any assumptions you made if details were vague"],
-      "missing_information": ["List what info would improve test coverage"],
       "clarifying_question": "Only fill this if you absolutely CANNOT generate any cases due to missing context."
     }
 
@@ -363,65 +474,103 @@ def bot(history, top_k, use_reranking, rerank_top_n, bm25_weight):
         asked_clarification=has_clarification
     )
     
-    # Build metrics string with evaluation results
-    eval_summary = f"""
-**Evaluation:**
-- Pass Rate: {eval_pass_rate:.1%}
-- Avg Score: {eval_avg_score:.2f}
-"""
-    
+    # Build metrics string 
     metrics_str = f"""
 **Metrics:**
-- **Total Latency:** {latency:.2f}s
-- **Retrieval Time:** {retrieval_time:.3f}s
-- **Generation Time:** {generation_time:.2f}s
-- **Retrieved Chunks:** {len(docs)}
-- **Relevance Score:** {safety_result.relevance_score:.2f}
-- **Test Cases Generated:** {test_case_count}
+- Latency: {latency:.2f}s (Retrieval: {retrieval_time:.2f}s, Generation: {generation_time:.2f}s)
+- Retrieved Chunks: {len(docs)}
+- Test Cases: {test_case_count}
 
-**Token Usage:**
-- Prompt: {prompt_tokens}
-- Completion: {completion_tokens}
-- Total: {total_tokens}
-
-**Safety:**
-- Injection Detected: {safety_result.injection_detected}
-- Warnings: {len(safety_result.warnings)}
-{eval_summary}
+**Tokens:** {prompt_tokens} prompt + {completion_tokens} completion = {total_tokens} total
 """
 
     history.append({"role": "assistant", "content": final_response})
     yield history, debug_snippets, metrics_str
 
-# UI Setup with gr.Blocks
-with gr.Blocks(title="DevAssure Chatbot") as demo:
+# UI Setup with gr.Blocks - Single Page Layout
+with gr.Blocks(title="DevAssure RAG Chatbot") as demo:
     gr.Markdown("# DevAssure RAG Chatbot")
+    gr.Markdown("Upload documents/images as context, then generate test cases from your queries.")
     
     with gr.Row():
+        # ==================== LEFT COLUMN: Chat ====================
         with gr.Column(scale=2):
-            chatbot = gr.Chatbot(height=600, label="Chat")
-            msg = gr.Textbox(placeholder="Ask a question about your documents...", label="Your Message")
+            chatbot = gr.Chatbot(height=450, label="Chat")
+            msg = gr.Textbox(placeholder="e.g., Create test cases for user signup...", label="Your Query")
             clear = gr.Button("Clear Chat")
             
             with gr.Accordion("Advanced Settings", open=False):
                 with gr.Row():
                     top_k_slider = gr.Slider(minimum=1, maximum=20, value=10, step=1, label="Retrieval Top K")
                     rerank_top_n_slider = gr.Slider(minimum=1, maximum=10, value=5, step=1, label="Rerank Top N")
-                bm25_weight_slider = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.1, label="BM25 (Keyword) Weight")
-                use_reranking_checkbox = gr.Checkbox(value=True, label="Enable Reranking")
-            
+                with gr.Row():
+                    bm25_weight_slider = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.1, label="BM25 Weight")
+                    use_reranking_checkbox = gr.Checkbox(value=True, label="Enable Reranking")
+        
+        # ==================== RIGHT COLUMN: Upload + Database + Debug ====================
         with gr.Column(scale=1):
-            metrics_box = gr.Markdown(label="Metrics")
-            debug_box = gr.Textbox(label="Debug Context (Retrieved Chunks)", lines=20, interactive=False)
+            # File Upload Section
+            gr.Markdown("### 📤 Upload Files")
+            file_upload = gr.File(
+                label="Select files (PDF, TXT, MD, DOC, PNG, JPG)",
+                file_count="multiple",
+                file_types=[".pdf", ".txt", ".md", ".doc", ".docx", ".png", ".jpg", ".jpeg"],
+                type="filepath"
+            )
+            upload_btn = gr.Button("Upload & Process", variant="primary")
+            upload_status = gr.Markdown()
+            
+            # Database Section
+            gr.Markdown("### 🗄️ Database")
+            db_contents_display = gr.Markdown(value=get_database_contents())
+            
+            with gr.Row():
+                refresh_btn = gr.Button("Refresh", size="sm")
+            
+            file_selector = gr.Dropdown(
+                choices=get_file_list(),
+                multiselect=True,
+                label="Select files to delete"
+            )
+            with gr.Row():
+                delete_btn = gr.Button("Delete Selected", variant="stop", size="sm")
+                clear_runtime_btn = gr.Button("Clear Uploads", size="sm")
+            delete_status = gr.Markdown()
+            
+            # Metrics & Debug
+            gr.Markdown("### 📊 Metrics")
+            metrics_box = gr.Markdown()
+            
+            with gr.Accordion("Retrieved Chunks (Debug)", open=False):
+                debug_box = gr.Textbox(lines=10, interactive=False, show_label=False)
     
-    # Event Handling
+    # ==================== EVENT HANDLING ====================
+    
+    # Chat events
     msg.submit(user, [msg, chatbot], [msg, chatbot], queue=False).then(
         bot, 
         [chatbot, top_k_slider, use_reranking_checkbox, rerank_top_n_slider, bm25_weight_slider], 
         [chatbot, debug_box, metrics_box]
     )
-    
     clear.click(lambda: [], None, chatbot, queue=False)
+    
+    # Upload events
+    upload_btn.click(
+        handle_file_upload,
+        inputs=[file_upload],
+        outputs=[upload_status]
+    ).then(
+        lambda: None,
+        outputs=[file_upload]
+    ).then(
+        refresh_database_view,
+        outputs=[file_selector, db_contents_display]
+    )
+    
+    # Database events
+    refresh_btn.click(refresh_database_view, outputs=[file_selector, db_contents_display])
+    delete_btn.click(delete_selected_files, inputs=[file_selector], outputs=[delete_status, file_selector, db_contents_display])
+    clear_runtime_btn.click(clear_runtime_uploads, outputs=[delete_status, file_selector, db_contents_display])
 
 if __name__ == "__main__":
     demo.launch()
