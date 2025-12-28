@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage
 VISION_MODEL = "gpt-5.1"
 
 VISION_PROMPT = """
-Analyze this UI screenshot for a Software QA Engineer. Provide a structured breakdown of the interface to aid in writing automated test cases.
+Analyze this image for a Software QA Engineer. Provide a structured breakdown of the interface to aid in writing automated test cases.
 
 Output the description in the following sections:
 
