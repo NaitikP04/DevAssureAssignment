@@ -333,7 +333,7 @@ def bot(history, top_k, use_reranking, rerank_top_n, bm25_weight):
     system_instruction = """
     You are a Senior QA Automation Architect. Your goal is to break the software.
     
-    Task: Generate comprehensive functional and negative test cases.
+    Task: Generate comprehensive test cases.
     
     GUIDELINES:
     1. QUANTITY: Generate BETWEEN 1-3 distinct test cases UNLESS otherwise specified by the USER.
