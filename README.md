@@ -1,6 +1,6 @@
 # DevAssure RAG Chatbot
 
-A file-based Multimodal RAG application for generating Test Cases from software documentation.
+A Multimodal RAG application for generating Test Cases from software documentation.
 
 ## 🏗️ Architecture
 
@@ -62,6 +62,7 @@ DevAssureAssignment/
 ├── utils/                  # Logging utilities
 ├── data/                   # Your input documents go here
 ├── chroma_db/              # Vector database (auto-generated)
+├── data/                   # Sample database (as shared in the assignment document)
 └── logs/                   # Log files (auto-generated)
 ```
 
