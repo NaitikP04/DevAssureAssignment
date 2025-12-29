@@ -208,7 +208,6 @@ __marimo__/
 
 # Project local artifacts
 chroma_db/
-data/
 *.sqlite3
 *.db
 *.log
